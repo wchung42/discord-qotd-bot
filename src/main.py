@@ -1,14 +1,11 @@
 import discord
 from discord.ext import commands
-from dotenv import load_dotenv
 import asyncio
 import asyncpg
 import aiohttp
 import os
 import logging
 import postgres
-
-load_dotenv()
 
 DEFAULT_PREFIX = 'q!'
 

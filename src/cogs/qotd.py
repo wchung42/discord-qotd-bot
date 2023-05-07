@@ -357,7 +357,7 @@ class Qotd(commands.Cog):
         await interaction.response.send_message(interaction_msg)
 
 
-    @app_commands.command(name='manualqotd', description='Manually send QOTD.')
+    @app_commands.command(name='send', description='Manually sends "Question of the Day".')
     @app_commands.guilds(discord.Object(id=OWNER_GUILD_ID))
     @app_commands.checks.has_permissions(administrator=True)
     async def qotd_manual_send(self, interaction: discord.Interaction) -> None:
@@ -413,7 +413,7 @@ class Qotd(commands.Cog):
                                                 f'Failed to send to **{fails} channels**.')
         
 
-    @tasks.loop(time=[time(23, 32, 0, 0, tzinfo=gettz('US/Eastern'))], reconnect=True)
+    @tasks.loop(time=[time(10, 0, 0, 0, tzinfo=gettz('US/Eastern'))], reconnect=True)
     async def qotd_send_question(self) -> None:
         '''Task sends QOTD @10AM EST daily.'''
         # Get all pending channels to send QOTD to
