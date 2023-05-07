@@ -18,6 +18,20 @@ class Events(commands.Cog):
     
 
     @commands.Cog.listener()
+    async def on_guild_join(self, guild: discord.guild) -> None:
+        '''Adds server info to database when bot joins a new server.'''
+        # Add guild to database with default prefix (?) and current members
+        try:
+            query = '''
+                INSERT INTO guilds(guild_id, prefix) 
+                VALUES ($1, $2)
+                '''
+            await self.bot.db.execute(query, guild.id, self.bot.command_prefix)
+        except asyncpg.PostgresError as e:
+            await postgres.send_postgres_error_embed(bot=self.bot, query=query, error_msg=e)
+
+
+    @commands.Cog.listener()
     async def on_guild_remove(self, guild) -> None:
         '''Clean up when bot leaves the guild.'''
         async with self.bot.db.acquire() as conn:

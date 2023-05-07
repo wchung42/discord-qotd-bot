@@ -12,10 +12,7 @@ import utils
 import openai
 import random
 import asyncio
-from dotenv import load_dotenv
 
-# Read .env
-load_dotenv()
 
 # Get question from ChatGpt
 def get_question(*args, **kwargs) -> str:
@@ -189,6 +186,7 @@ class Qotd(commands.Cog):
         else:
             if not response:
                 await interaction.response.send_message('**[ERROR]:** Could not set up QOTD. Please try again later.', ephemeral=True)
+                return
 
         # Set given channel as QOTD channel if given, else create QOTD channel
         qotd_channel: discord.abc.GuildChannel = interaction.guild.get_channel(response[0].get('qotd_channel_id'))

@@ -6,10 +6,6 @@ import aiohttp
 import os
 import logging
 import postgres
-from dotenv import load_dotenv
-
-# Read .env file
-load_dotenv()
 
 DEFAULT_PREFIX = 'q!'
 
