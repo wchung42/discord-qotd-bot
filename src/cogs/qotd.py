@@ -360,7 +360,6 @@ class Qotd(commands.Cog):
 
 
     @app_commands.command(name='send', description='Manually sends "Question of the Day".')
-    @app_commands.guilds(discord.Object(id=OWNER_GUILD_ID))
     @app_commands.checks.has_permissions(administrator=True)
     async def qotd_manual_send(self, interaction: discord.Interaction) -> None:
         # Get all pending channels to send QOTD to
