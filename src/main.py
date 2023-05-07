@@ -6,6 +6,10 @@ import aiohttp
 import os
 import logging
 import postgres
+from dotenv import load_dotenv
+
+# Read .env file
+load_dotenv()
 
 DEFAULT_PREFIX = 'q!'
 
@@ -37,7 +41,7 @@ class QuestionBot(commands.Bot):
         logging.basicConfig(level=logging.INFO)
 
         self.initial_extensions = []
-        for file in os.listdir('cogs'):
+        for file in os.listdir('./src/cogs'):
             if file.endswith('.py'):
                 self.initial_extensions.append(f'cogs.{file[:-3]}')
     
