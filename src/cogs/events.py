@@ -46,13 +46,6 @@ class Events(commands.Cog):
                         WHERE guild_id = $1
                         '''
                     await self.bot.db.execute(query, guild.id)
-
-                    # Remove all pending qotd from guild database
-                    query = '''
-                        DELETE FROM qotd_pending_messages
-                        WHERE guild_id = $1
-                    '''
-                    await self.bot.db.execute(query, guild.id)
                 except asyncpg.PostgresError as e:
                     await tr.rollback()
                     await postgres.send_postgres_error_embed(bot=self.bot, query=query, error_msg=e)
