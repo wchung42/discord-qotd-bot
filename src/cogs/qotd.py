@@ -12,6 +12,10 @@ import utils
 import openai
 import random
 import asyncio
+from dotenv import load_dotenv
+
+# Read .env
+load_dotenv()
 
 # Get question from ChatGpt
 def get_question(*args, **kwargs) -> str:
