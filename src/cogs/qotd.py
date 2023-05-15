@@ -70,7 +70,7 @@ def fetch_questions(asked_questions: list[str] = None, *args, **kwargs) -> list[
                     break
             if success:
                 # Format questions string as a list
-                questions_list: list[str] = [question.split('.', 1)[1].strip() for question in questions_content.split('\n')]
+                questions_list: list[str] = []
                 for question in questions_content.split('\n'):
                     try:
                         questions_list.append(question.split('.', 1)[1].strip())
@@ -366,7 +366,7 @@ class Qotd(commands.Cog):
                 else:
                     message: discord.WebhookMessage = await interaction.followup.send(success_message_text + '\n**Generating new questions...**', wait=True)
                 
-                    updated: bool = await self.update_questions_list(interaction.guild_id)
+                    updated: bool = await update_questions_list(self.bot, interaction.guild_id)
                     if updated:
                         await message.edit(content=message.content + '\n**[SUCCESS]:** New questions have been **added** for your server.')
                     else:
@@ -451,20 +451,24 @@ class Qotd(commands.Cog):
         if confirmation.value == 1:
             # Fetch QOTD channel from db
             try:
-                query = '''
-                    SELECT qotd_channel_id FROM guilds
+                query: str = '''
+                    SELECT qotd_channel_id, qotd_approval_channel_id 
+                    FROM guilds
                     WHERE guild_id = $1
                 '''
-                qotd_channel_id = await self.bot.db.fetchval(query, interaction.guild_id)
+                result = await self.bot.db.fetchrow(query, interaction.guild_id)
             except asyncpg.PostgresError as e:
                 await postgres.send_postgres_error_embed(bot=self.bot, query=query, error_msg=e)
-            else:
-                if qotd_channel_id:
+            
+            if result:
+                qotd_channel_id: int = result.get('qotd_channel_id')
+                qotd_approval_channel_id: int = result.get('qotd_approval_channel_id')
+                if qotd_channel_id and qotd_approval_channel_id:
                     # Remove qotd_channel_id and qotd_approval_channel_id from database
                     try:
-                        query = '''
+                        query: str = '''
                             UPDATE guilds
-                            SET qotd_channel_id = NULL, qotd_approval_channel_id = NULL
+                            SET qotd_channel_id = NULL, qotd_approval_channel_id = NULL, unasked_questions = NULL, asked_questions = NULL
                             WHERE guild_id = $1
                         '''
                         await self.bot.db.execute(query, interaction.guild_id)
@@ -472,6 +476,11 @@ class Qotd(commands.Cog):
                         await postgres.send_postgres_error_embed(bot=self.bot, query=query, error_msg=e)
                     else:
                         interaction_msg += 'QOTD removed.'
+                    
+                    # Delete qotd approval channel
+                    qotd_approval_channel: discord.TextChannel = interaction.guild.get_channel(qotd_approval_channel_id)
+                    if qotd_approval_channel:
+                       await qotd_approval_channel.delete(reason='Removed QOTD.')
                 else:
                     interaction_msg += 'QOTD is not set up. Use `/setup`.'   
         else:
