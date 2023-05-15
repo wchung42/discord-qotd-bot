@@ -13,37 +13,46 @@ import openai
 import random
 import asyncio
 
+# ----------------------------------
+# QOTD utility functions
+# ----------------------------------
 
-# Get question from ChatGpt
-def get_question(*args, **kwargs) -> str:
+# Get question from OpenAI
+def fetch_questions(asked_questions: list[str] = None, *args, **kwargs) -> list[str]:
+    '''
+    Fetch 45 new questions from from OpenAI
+    '''
     openai.api_key = (str)(os.getenv('OPENAI_API_KEY'))
     success: bool = False
     delay: float = 1
     exponential_base: float = 2
     jitter: bool = True
     num_retries: int = 0
-    max_retries: int = 10
-    prompt: str = f'Give me a conversation starter question'
+    max_retries: int = 5
+    
+    prompt: str = 'Give me a newline delimited list of 45 unique conversation starter questions'
+    if asked_questions:
+        prompt += f' that is not already in the following list: {asked_questions}' 
+    
     while not success:
         try:
             response = openai.ChatCompletion.create(
                 model='gpt-3.5-turbo',
-                messages=[{
-                    'role': 'assistant',
-                    'content': prompt,
-                    'name': 'qotd-bot'
-                }],
-                temperature=1.0,
-                max_tokens=200,
+                messages=[
+                    {'role': 'system', 'content': 'You are a helpful assistant that asks thought-provoking and conversation starter questions.'},
+                    {'role': 'user', 'content': prompt}
+                ],
+                temperature=0.67,
+                max_tokens=2250,
                 top_p=1,
-                frequency_penalty=1.5,
-                presence_penalty=1.5
+                frequency_penalty=0,
+                presence_penalty=0
             )
-            print(response)
+            # print(response)
         except openai.APIError as e:
             num_retries += 1
             if num_retries > max_retries:
-                return ('Request timed out. Please try again.')
+                return None
             delay *= exponential_base * (1 + jitter * random.random())
             asyncio.sleep(delay)
         except openai.InvalidRequestError as e:
@@ -52,23 +61,111 @@ def get_question(*args, **kwargs) -> str:
             continue
         else:
             success = True
-            question: str = response.choices[0]['message']['content'].strip('\"')
+            questions_content: str = response.choices[0]['message']['content'].strip('\"')
             invalid_responses: list = [
                 "I'm sorry, I cannot generate inappropriate or offensive content.", "AI language model",]
             for invalid in invalid_responses:
-                if invalid in question:
+                if invalid in questions_content:
                     success = False
                     break
             if success:
-                return question
+                # Format questions string as a list
+                questions_list: list[str] = [question.split('.', 1)[1].strip() for question in questions_content.split('\n')]
+                for question in questions_content.split('\n'):
+                    try:
+                        questions_list.append(question.split('.', 1)[1].strip())
+                    except Exception as e:
+                        pass
+                return questions_list
     return None
 
 
+async def update_questions_list(bot: commands.Bot, guild_id: int, *args, **kwargs) -> bool:
+    '''
+    Update database with new unasked_questions
+    and reset asked_questions for the given guild
+    '''
+    # Fetch new questions
+    loop = asyncio.get_running_loop()
+    new_questions: list[str] = await loop.run_in_executor(None, fetch_questions)
+    if not new_questions:
+        return False
+    
+    # Update database
+    try:
+        query: str = '''
+            UPDATE guilds
+            SET unasked_questions = $1, asked_questions = $2
+            WHERE guild_id = $3;
+        '''
+        await bot.db.execute(query, new_questions, [], guild_id)
+    except asyncpg.PostgresError as e:
+        await postgres.send_postgres_error_embed(bot, query, e)
+        return False
+    
+    return True
+
+
+async def get_question(bot: commands.Bot, guild_id: int, *args, **kwargs) -> str:
+    '''
+    Returns the last question in unasked_questions
+    and moves it from unasked_questions to asked_questions.
+    '''
+    try:
+        query: str = '''
+            SELECT unasked_questions, asked_questions
+            FROM guilds
+            WHERE guild_id = $1
+        '''
+        result = await bot.db.fetchrow(query, guild_id)
+    except asyncpg.PostgresError as e:
+        await postgres.send_postgres_error_embed(bot, query, e)
+    
+    if result:
+        unasked_questions: list[str] = result.get('unasked_questions')
+        asked_questions: list[str] = result.get('asked_questions')
+        
+        # Generate new questions if there are no more questions in unasked
+        if not unasked_questions:
+            loop = asyncio.get_running_loop()
+            unasked_questions = await loop.run_in_executor(None, fetch_questions, asked_questions)
+
+        # Early return if error generating questions
+        if not unasked_questions:
+            # Replace print with discord logging
+            print('[ERROR]: Could not generate new questions')
+            return None
+        
+        # Update asked_questions for guild
+        qotd_question: str = unasked_questions[-1]
+        updated_unasked_questions: list[str] = unasked_questions[0:len(unasked_questions) - 1]
+        asked_questions.append(qotd_question)
+        updated_asked_questions: list[str] = asked_questions
+        try:
+            query: str = '''
+                UPDATE guilds
+                SET unasked_questions = $1, asked_questions = $2
+                WHERE guild_id = $3;
+            '''
+            await bot.db.execute(query, updated_unasked_questions, updated_asked_questions, guild_id)
+        except asyncpg.PostgresError as e:
+            await postgres.send_postgres_error_embed(bot, query, e)
+        else:
+            return qotd_question
+    
+    print('[ERROR]: Failed to fetch from postgres database')
+    return None
+
+
+# ----------------------------------
+# QOTD classes
+# ----------------------------------
 class PendingQOTDView(View):
     def __init__(self, bot: commands.Bot):
-        super().__init__(timeout=None)
+        super().__init__(timeout=86400)
         self.bot = bot
     
+
     @discord.ui.button(label='Approve', style=discord.ButtonStyle.green, emoji='👍')
     async def approve_button_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
         # Get qotd channel
@@ -110,7 +207,7 @@ class PendingQOTDView(View):
     async def callback(self, interaction: discord.Interaction, button: discord.ui.Button):
         question: str = None
         while True:
-            question: str = get_question()
+            question: str = await get_question(self.bot, interaction.guild_id)
             if question:
                 break
 
@@ -123,8 +220,15 @@ class PendingQOTDView(View):
                 inline=False
             ) 
             await interaction.response.edit_message(embed=new_embed)
+    
 
+    def on_timeout(self):
+        self.clear_items() # Clear view on timeout
 
+            
+# ---------------------------
+# QOTD cog implementation
+# ---------------------------
 class Qotd(commands.Cog):
     '''Question of The Day Cog'''
     OWNER_GUILD_ID = os.getenv('OWNER_GUILD_ID')
@@ -146,7 +250,7 @@ class Qotd(commands.Cog):
 
     async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
         '''Error handler for QOTD module'''
-        to_send: str = '[ERROR]: '
+        to_send: str = '**[ERROR]:** '
         if isinstance(error, app_commands.MissingPermissions):
             to_send += f'You are missing `{error.missing_permissions}` permission(s) to use this command in this channel.'
         elif isinstance(error, app_commands.BotMissingPermissions):
@@ -158,42 +262,66 @@ class Qotd(commands.Cog):
         else:
             to_send += f'{error}'
 
-        if not interaction.response.is_done():
-            await interaction.response.send_message(to_send, ephemeral=True)        
+        await interaction.response.send_message(to_send, ephemeral=True)    
 
 
-    # Set up QOTD
-    @app_commands.command(name='setup', description='Set up QOTD')
+    def create_pending_question_embed(self, question: str) -> discord.Embed:
+        pending_question_embed: discord.Embed = discord.Embed(
+            title='Pending QOTD',
+            color=0xa7c7e7,
+            timestamp=datetime.now()
+        )
+        pending_question_embed.add_field(name='Question', value=question, inline=False)
+        pending_question_embed.add_field(name='Status', value='Pending', inline=False)
+        return pending_question_embed
+    
+
+    # ----------------------------------
+    # QOTD commands
+    # ----------------------------------
+
+    # QOTD setup command
+    @app_commands.command(name='setup', description='Set up Question of the Day.')
     @app_commands.checks.has_permissions(manage_guild=True, manage_channels=True)
-    @app_commands.checks.bot_has_permissions(manage_channels=True)
+    @app_commands.checks.bot_has_permissions(manage_channels=True, send_messages=True)
     async def qotd_setup(
         self, 
         interaction: discord.Interaction, 
         channel: Optional[discord.TextChannel]
     ) -> None:
-        """Setup command for QOTD module."""
-        interaction_msg: str = ''
+        '''Setup command for QOTD module.'''
+        await interaction.response.defer()
         # Check if server requires QOTD setup
         try:
             query: str = '''
                 SELECT qotd_channel_id, qotd_approval_channel_id
                 FROM guilds 
-                WHERE guild_id = $1
-                '''
+                WHERE guild_id = $1;
+            '''
             response = await self.bot.db.fetch(query, interaction.guild_id)
         except asyncpg.PostgresError as e:
             await postgres.send_postgres_error_embed(bot=self.bot, query=query, error_msg=e)
-        else:
-            if not response:
-                await interaction.response.send_message('**[ERROR]:** Could not set up QOTD. Please try again later.', ephemeral=True)
-                return
+            await interaction.followup.send(f'**[ERROR]**: Something went wrong. Please try again.', ephemeral=True)
+            return 
 
         # Set given channel as QOTD channel if given, else create QOTD channel
         qotd_channel: discord.abc.GuildChannel = interaction.guild.get_channel(response[0].get('qotd_channel_id'))
         qotd_approval_channel: discord.abc.GuildChannel = interaction.guild.get_channel(response[0].get('qotd_approval_channel_id'))
         if qotd_channel and qotd_approval_channel:
-            interaction_msg += f'QOTD is already set up in {qotd_channel.mention}. If you want to edit channels, please use `/qotd channel`.'
+            await interaction.followup.send(f'QOTD is already set up in {qotd_channel.mention} and {qotd_approval_channel.mention}. '\
+                                            f'If you want to edit channels, please use `channel`.', ephemeral=True)
+            return
         else:
+            overwrites = {
+                interaction.guild.default_role: discord.PermissionOverwrite(read_messages=False),
+                interaction.guild.me: discord.PermissionOverwrite( # Necessary permissions for bot
+                    read_messages=True,
+                    send_messages=True,
+                    embed_links=True,
+                    read_message_history=True,
+                )
+            }
+
             # Check if channel given is a text channel
             if channel and isinstance(channel, discord.TextChannel):
                 required_command_perms: list[tuple] = {
@@ -202,44 +330,29 @@ class Qotd(commands.Cog):
                 }
                 missing_perms: list = utils.perms_check(interaction.guild.get_member(self.bot.user.id), channel, required_command_perms)
                 if missing_perms:
-                    interaction_msg += f'Bot is missing these required permissions `{missing_perms}` in {channel.mention} for QOTD.'
-                else:
-                    qotd_channel = channel
+                    await interaction.followup.send(f'Bot is missing these required permissions' \
+                                                            f'`{missing_perms}` in {channel.mention} for QOTD.', ephemeral=True)
+                    return
+                qotd_channel = channel
             # Create QOTD channel if no channel or incorrect channel given
             else:
-                overwrites = {
-                    interaction.guild.default_role: discord.PermissionOverwrite(read_messages=False),
-                    interaction.guild.me: discord.PermissionOverwrite( # Necessary permissions for bot
-                        read_messages=True,
-                        send_messages=True,
-                        embed_links=True,
-                        read_message_history=True,
-                    )
-                }
-                qotd_channel: discord.abc.GuildChannel = await interaction.guild.create_text_channel(name='qotd', reason='QOTD setup', overwrites=overwrites)
-                if qotd_channel:
-                    interaction_msg += f'Successfully set up QOTD.\nQuestions will appear in {qotd_channel.mention}.'
-
-            # Create approval channel if it does not exist
-            if not qotd_approval_channel:
-                overwrites = {
-                    interaction.guild.default_role: discord.PermissionOverwrite(read_messages=False),
-                    interaction.guild.me: discord.PermissionOverwrite( # Necessary permissions for bot
-                        read_messages=True,
-                        send_messages=True,
-                        embed_links=True,
-                        read_message_history=True,
-                    )
-                }
+                qotd_channel: discord.abc.GuildChannel = await interaction.guild.create_text_channel(
+                    name='qotd', 
+                    reason='QOTD setup', 
+                    overwrites=overwrites
+                )
+            
+            # Create approval channel
+            if qotd_channel:
                 qotd_approval_channel: discord.abc.GuildChannel = await interaction.guild.create_text_channel(
                     name='qotd-approval',
                     reason='QOTD setup: QOTD approval channel',
                     overwrites=overwrites
                 )
-                if qotd_approval_channel:
-                    interaction_msg += f'\nQuestions for approval will appear in {qotd_approval_channel.mention}.'
 
             if qotd_channel and qotd_approval_channel:
+                success_message_text: str = f'**[SUCCESS]:** Questions for approval will appear in {qotd_approval_channel.mention}' \
+                                       f' and approved questions will appear in {qotd_channel.mention}'
                 try:
                     query = '''
                         UPDATE guilds 
@@ -248,15 +361,23 @@ class Qotd(commands.Cog):
                     '''
                     await self.bot.db.execute(query, qotd_channel.id, qotd_approval_channel.id, interaction.guild_id)
                 except asyncpg.PostgresError as e:
-                    await postgres.send_postgres_error_embed(bot=self.bot, query=query, error_msg=e)
+                    await postgres.send_postgres_error_embed(self.bot, query, e)
+                    return
                 else:
-                    interaction_msg += f'QOTD channel set to {channel.mention}.'
-
-        await interaction.response.send_message(interaction_msg)
+                    message: discord.WebhookMessage = await interaction.followup.send(success_message_text + '\n**Generating new questions...**', wait=True)
+                
+                    updated: bool = await self.update_questions_list(interaction.guild_id)
+                    if updated:
+                        await message.edit(content=message.content + '\n**[SUCCESS]:** New questions have been **added** for your server.')
+                    else:
+                        await message.edit(message=message.content + '\n**[ERROR]:** Failed to add new questions for your server. Please use `/update`.')
+            else:
+                await interaction.followup.send('**[ERROR]:** Failed to set up QOTD. Please try again.', ephemeral=True)
 
 
     @app_commands.command(name='channel', description='Get or edit QOTD channel')
     @app_commands.checks.has_permissions(manage_channels=True)
+    @app_commands.checks.bot_has_permissions(send_messages=True)
     async def qotd_edit_channel(self, interaction: discord.Interaction, channel: Optional[discord.TextChannel]) -> None:
         """Command to update QOTD channel."""
         # Required permissions for this command
@@ -318,7 +439,7 @@ class Qotd(commands.Cog):
         app_commands.Choice(name='No', value=0)
     ])
     @app_commands.checks.has_permissions(manage_guild=True)
-    @app_commands.checks.bot_has_permissions(manage_channels=True)
+    @app_commands.checks.bot_has_permissions(manage_channels=True, send_messages=True)
     async def qotd_remove(
         self,
         interaction: discord.Interaction,
@@ -339,11 +460,11 @@ class Qotd(commands.Cog):
                 await postgres.send_postgres_error_embed(bot=self.bot, query=query, error_msg=e)
             else:
                 if qotd_channel_id:
-                    # Remove from database
+                    # Remove qotd_channel_id and qotd_approval_channel_id from database
                     try:
                         query = '''
                             UPDATE guilds
-                            SET qotd_channel_id = NULL
+                            SET qotd_channel_id = NULL, qotd_approval_channel_id = NULL
                             WHERE guild_id = $1
                         '''
                         await self.bot.db.execute(query, interaction.guild_id)
@@ -352,7 +473,7 @@ class Qotd(commands.Cog):
                     else:
                         interaction_msg += 'QOTD removed.'
                 else:
-                    interaction_msg += 'QOTD is not set up. Use `/qotd setup`.'   
+                    interaction_msg += 'QOTD is not set up. Use `/setup`.'   
         else:
             interaction_msg += 'No action performed.'
         
@@ -362,57 +483,39 @@ class Qotd(commands.Cog):
     @app_commands.command(name='send', description='Manually sends "Question of the Day".')
     @app_commands.checks.has_permissions(administrator=True)
     async def qotd_manual_send(self, interaction: discord.Interaction) -> None:
-        # Get all pending channels to send QOTD to
+        await interaction.response.defer()
         try:
-            query = '''
+            query: str = '''
                 SELECT qotd_approval_channel_id
                 FROM guilds
-                WHERE qotd_approval_channel_id IS NOT NULL
+                WHERE guild_id = $1
             '''
-            results = await self.bot.db.fetch(query)
+            result = await self.bot.db.fetchrow(query, interaction.guild_id)
         except asyncpg.PostgresError as e:
             await postgres.send_postgres_error_embed(bot=self.bot, query=query, error_msg=e)
         
-        if results:
-            channels_to_send: list = [res.get('qotd_approval_channel_id') for res in results]
-            # Get question prompt and send to channel
-            success: int = 0
-            fails: int = 0
-            for channel_id in channels_to_send:
-                # Get question
-                max_retries: int = 5
-                retries: int = 0
-                delay: int = 5
-                while True:
-                    question: str = get_question()
-                    if question or retries >= max_retries:
-                        break
-                    else:
-                        retries += 1
-                        asyncio.sleep(delay)
-                if retries >= max_retries:
-                    return
-                
-                # Create embed for pending question
-                pending_question_embed: discord.Embed = discord.Embed(
-                    title='Pending QOTD',
-                    color=0xa7c7e7,
-                    timestamp=datetime.now()
-                )
-                pending_question_embed.add_field(name='Question', value=question, inline=False)
-                pending_question_embed.add_field(name='Status', value='Pending', inline=False)
+        if result:
+            qotd_approval_channel_id: str = result.get('qotd_approval_channel_id')
+            channel: discord.abc.GuildChannel = await self.bot.fetch_channel(qotd_approval_channel_id)
+            if not channel:
+                await interaction.followup.send('**[ERROR]:** No valid QOTD channel found. Try **/setup**.', ephemeral=True)
+                return
 
-                # Send embed
-                channel = await self.bot.fetch_channel(channel_id)
-                message: discord.Message = await channel.send(embed=pending_question_embed, view=PendingQOTDView(self.bot))
-                if message:
-                    success += 1
-                else:
-                    fails += 1
-
-        await interaction.response.send_message(f'Successfully sent QOTD to **{success} channels**.\n'
-                                                f'Failed to send to **{fails} channels**.')
-        
+            question: str = await get_question(self.bot, interaction.guild_id)
+            if not question:
+                await interaction.followup.send('**[ERROR]:** Cannot fetch question. Please try again.', ephemeral=True)
+                return
+            
+            # Send embed
+            pending_question_embed: discord.Embed = self.create_pending_question_embed(question)
+            message: discord.Message = await channel.send(embed=pending_question_embed, view=PendingQOTDView(self.bot))
+            if message:
+                await interaction.followup.send(f'**[SUCCESS]:** Sent QOTD to {channel.mention}.', ephemeral=True)
+            else:
+                await interaction.followup.send(f'**[ERROR]:** Failed to send QOTD to {channel.mention}. Please try again.', ephemeral=True)
+        else:
+            await interaction.followup.send('No valid QOTD channel found. Try **/setup**.', ephemeral=True)
+            
 
     @tasks.loop(time=[time(10, 0, 0, 0, tzinfo=gettz('US/Eastern'))], reconnect=True)
     async def qotd_send_question(self) -> None:
@@ -432,31 +535,12 @@ class Qotd(commands.Cog):
             channels_to_send: list = [res.get('qotd_approval_channel_id') for res in results]
             # Get question prompt and send to channel
             for channel_id in channels_to_send:
-                # Get question
-                max_retries: int = 5
-                retries: int = 0
-                delay: int = 5
-                while True:
-                    question: str = get_question()
-                    if question or retries >= max_retries:
-                        break
-                    else:
-                        retries += 1
-                        asyncio.sleep(delay)
-                if retries >= max_retries:
-                    continue # Continue to next iteration after max retries exceeded
-                
-                # Create embed for pending question
-                pending_question_embed: discord.Embed = discord.Embed(
-                    title='Pending QOTD',
-                    color=0xa7c7e7,
-                    timestamp=datetime.now()
-                )
-                pending_question_embed.add_field(name='Question', value=question, inline=False)
-                pending_question_embed.add_field(name='Status', value='Pending', inline=False)
-
-                # Send embed
                 channel = await self.bot.fetch_channel(channel_id)
+                question: str = await get_question(self.bot, channel.guild.id)
+                if not question:
+                    await channel.send('**[ERROR]:** Error encountered with QOTD. Please try using `/send` instead.')
+                    continue   
+                pending_question_embed: discord.Embed = self.create_pending_question_embed(question)
                 message: discord.Message = await channel.send(embed=pending_question_embed, view=PendingQOTDView(self.bot))
 
     

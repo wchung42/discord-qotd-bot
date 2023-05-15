@@ -6,6 +6,9 @@ import aiohttp
 import os
 import logging
 import postgres
+from dotenv import load_dotenv
+
+load_dotenv()
 
 DEFAULT_PREFIX = 'q!'
 
@@ -95,8 +98,10 @@ class QuestionBot(commands.Bot):
                     CREATE TABLE IF NOT EXISTS guilds (
                         guild_id BIGINT PRIMARY KEY,
                         prefix VARCHAR(5),
-                        qotd_approval BIGINT,
-                        qotd_channel_id BIGINT
+                        qotd_approval_channel_id BIGINT,
+                        qotd_channel_id BIGINT,
+                        unasked_questions TEXT[],
+                        asked_questions TEXT[]
                     )
                 '''
                 await self.db.execute(query)
