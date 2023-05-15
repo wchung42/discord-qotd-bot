@@ -468,7 +468,7 @@ class Qotd(commands.Cog):
                     try:
                         query: str = '''
                             UPDATE guilds
-                            SET qotd_channel_id = NULL, qotd_approval_channel_id = NULL, unasked_questions = NULL, asked_questions = NULL
+                            SET qotd_channel_id = NULL, qotd_approval_channel_id = NULL, unasked_questions = '{}', asked_questions = '{}'
                             WHERE guild_id = $1
                         '''
                         await self.bot.db.execute(query, interaction.guild_id)

@@ -100,8 +100,8 @@ class QuestionBot(commands.Bot):
                         prefix VARCHAR(5),
                         qotd_approval_channel_id BIGINT,
                         qotd_channel_id BIGINT,
-                        unasked_questions TEXT[],
-                        asked_questions TEXT[]
+                        unasked_questions TEXT[] NOT NULL DEFAULT '{}',
+                        asked_questions TEXT[] NOT NULL DEFAULT '{}'
                     )
                 '''
                 await self.db.execute(query)
